@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Pay & Print</title>
+
+  <!-- Supabase Client -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js"></script>
+
+  <!-- Razorpay Checkout -->
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+  <!-- PDF.js for page count -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script>
+    // Initialize pdfjsLib properly
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+  </script>
+</head>
+
+<body>
+  <h2>Upload & Print PDF</h2>
+
+  <form id="uploadForm">
+    <input type="file" id="file" accept="application/pdf" required />
+    <button type="submit">Upload & Print</button>
+  </form>
+
+  <p id="status"></p>
+
+  <script>
+    // Create Supabase client instance (renamed to supabaseClient)
+    const supabaseClient = supabase.createClient(
+      'https://lblruuemrevxqpohhxeq.supabase.co', // your-project.supabase.co
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxibHJ1dWVtcmV2eHFwb2hoeGVxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTYwMzM3MDUsImV4cCI6MjA3MTYwOTcwNX0.5h3JPaMOcW3eMcFv_jelNQgmPwJ0xpV5VoB2T6_UMwg' // your-anon-key
+    );
+
+    const RAZORPAY_API_KEY = 'rzp_test_R97CT8W0dJjd7g'; // your Razorpay test key
+    const RATE_PER_PAGE = 10; // INR per page
+
+    document.getElementById('uploadForm').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      const file = document.getElementById('file').files[0];
+      const status = document.getElementById('status');
+
+      if (!file || file.type !== 'application/pdf') {
+        alert('Select a valid PDF file.');
+        return;
+      }
+
+      status.textContent = 'Calculating pages...';
+
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(reader.result) }).promise;
+          const pages = pdf.numPages;
+          const amount = pages * RATE_PER_PAGE * 100; // in paise
+
+          console.log("PDF pages:", pages);
+          console.log("Payment amount (paise):", amount);
+
+          const options = {
+            key: RAZORPAY_API_KEY,
+            amount: amount,
+            currency: "INR",
+            name: "Ever Printer",
+            description: `${pages} pages to print`,
+            handler: async function (response) {
+              console.log("Payment successful:", response);
+              status.textContent = "Uploading to Supabase...";
+
+              const path = `printjobs/${Date.now()}_${file.name}`;
+              const { data, error } = await supabaseClient.storage
+                .from('print-jobs')
+                .upload(path, file, {
+                  contentType: 'application/pdf',
+                  upsert: true
+                });
+
+              if (error) {
+                console.error("Supabase upload error:", error.message);
+                status.textContent = "Upload error: " + error.message;
+                return;
+              }
+
+              const { data: urlData } = supabaseClient.storage
+                .from('print-jobs')
+                .getPublicUrl(path);
+              const file_url = urlData.publicUrl;
+
+              // Send data to your backend server
+              const formData = new FormData();
+              formData.append('filename', file.name);
+              formData.append('pages', pages);
+              formData.append('file_url', file_url);
+              formData.append('payment_id', response.razorpay_payment_id);
+
+              const res = await fetch('http://localhost:5000/supabase-upload', {
+                method: 'POST',
+                headers: { 'Authorization': 'Bearer mysecrettoken' },
+                body: formData
+              });
+
+              const result = await res.text();
+              status.textContent = result;
+            }
+          };
+
+          const rzp = new Razorpay(options);
+          rzp.open();
+
+        } catch (err) {
+          console.error("Error reading PDF:", err);
+          status.textContent = "Failed to read PDF.";
+        }
+      };
+
+      reader.readAsArrayBuffer(file);
+    });
+  </script>
+</body>
+</html>
